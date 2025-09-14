@@ -16,7 +16,7 @@ with st.sidebar:
     # Model path (default to your path)
     model_path = st.text_input(
         "YOLO model path (.pt)",
-        value="/malaria11n.pt",
+        value="malaria11n.pt",
         help="Path to your trained YOLO model file.",
     )
 
