@@ -218,7 +218,7 @@ if run_btn:
 
         with left:
             st.subheader("🖼️ Annotated Image")
-            st.image(annotated_rgb, caption=f"{filename}", use_column_width=True)
+            st.image(annotated_rgb, caption=f"{filename}", use_container_width=True)
 
             # Download button
             pil_img = Image.fromarray(annotated_rgb)
