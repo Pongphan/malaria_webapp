@@ -1,1 +1,1 @@
-# malaria_webapp
+# Malaria Web Applications
