@@ -1,14 +1,3 @@
-# app.py
-# Streamlit + Ultralytics YOLO example for malaria parasite detection
-# - Supports image and video upload
-# - Adjustable confidence/IoU thresholds
-# - Shows per-class counts and lets you download detections as CSV
-#
-# How to run:
-#   1) pip install -U streamlit ultralytics opencv-python pillow numpy pandas
-#   2) put your weights file (malaria11n.pt) next to app.py (or update the path in the sidebar)
-#   3) streamlit run app.py
-
 import os
 import io
 import time
@@ -34,7 +23,6 @@ except Exception as e:
 def _bgr_to_rgb(img_bgr: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-
 def _result_to_dataframe(result) -> pd.DataFrame:
     """Convert a single YOLO result to a tidy DataFrame."""
     names = result.names  # dict id->name
@@ -58,17 +46,14 @@ def _result_to_dataframe(result) -> pd.DataFrame:
         })
     return pd.DataFrame(rows)
 
-
 def _class_counts(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame({"class_name": [], "count": []})
     counts = df.groupby("class_name").size().reset_index(name="count").sort_values("count", ascending=False)
     return counts
 
-
 def _export_df_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
-
 
 def _get_device_choice(device_str: str) -> Any:
     # Streamlit selectbox returns a string; YOLO accepts: 0 or "0" for first GPU, or "cpu" for CPU
@@ -83,13 +68,12 @@ def _get_device_choice(device_str: str) -> Any:
     except Exception:
         return None
 
-
 # ---------------------------
 # UI Layout
 # ---------------------------
 
-st.set_page_config(page_title="Malaria YOLO Detector", page_icon="🧫", layout="wide")
-st.title("🧫 Malaria Parasite Detection – YOLO")
+st.set_page_config(page_title="Malaria Detector", page_icon="🧫", layout="wide")
+st.title("🧫 Malaria Parasite Detection")
 st.caption("Demo Streamlit app using Ultralytics YOLO with your trained weights (malaria11n.pt)")
 
 with st.sidebar:
@@ -119,10 +103,6 @@ with st.sidebar:
 @st.cache_resource(show_spinner=True)
 def load_model_cached(path: str):
     return YOLO(path)
-
-
-# Tabs for different sources
-img_tab, vid_tab = st.tabs(["📷 Image", "🎥 Video"])  # add Webcam tab later if needed
 
 # ---------------------------
 # Image Tab
@@ -177,64 +157,4 @@ with img_tab:
 
     else:
         st.info("Upload an image to start.")
-
-# ---------------------------
-# Video Tab
-# ---------------------------
-with vid_tab:
-    st.subheader("Detect on a video")
-    upvid = st.file_uploader("Upload a video", type=["mp4", "mov", "avi", "mkv", "webm"])
-    auto_play = st.checkbox("Auto-play processed video", value=True)
-
-    if upvid is not None:
-        # Save to a temporary file
-        tdir = tempfile.mkdtemp(prefix="yolo_vid_")
-        in_path = os.path.join(tdir, upvid.name)
-        with open(in_path, "wb") as f:
-            f.write(upvid.read())
-
-        with st.spinner("Running YOLO on video (this can take a bit)..."):
-            model = load_model_cached(weights_path)
-            device_choice = _get_device_choice(device_str)
-            # Let Ultralytics handle saving the annotated video
-            results = model.predict(
-                source=in_path,
-                conf=conf_thres,
-                iou=iou_thres,
-                imgsz=imgsz,
-                device=device_choice,
-                save=True,
-                verbose=False,
-                stream=False,
-            )
-        # The library places outputs under results[0].save_dir
-        save_dir = getattr(results[0], "save_dir", None)
-
-        # Find the processed video in save_dir
-        processed_video = None
-        if save_dir and os.path.isdir(save_dir):
-            for fn in os.listdir(save_dir):
-                if fn.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
-                    processed_video = os.path.join(save_dir, fn)
-                    break
-
-        if processed_video and os.path.exists(processed_video):
-            st.success("Video processed!")
-            st.video(processed_video, start_time=0) if auto_play else st.write("Processed video ready below.")
-            with open(processed_video, "rb") as f:
-                st.download_button("⬇️ Download processed video", f, file_name=os.path.basename(processed_video))
-        else:
-            st.warning("Couldn't locate the processed video. Check the logs/permissions.")
-    else:
-        st.info("Upload a video to start.")
-
-# ---------------------------
-# Footer
-# ---------------------------
-st.markdown("""
----
-**Tips**
-- If you see CUDA warnings, switch *Device* to **CPU** in the sidebar.
-- For speed on GPU, keep the image size close to what you trained with (e.g., 640).
-- The CSV includes one row per detection with (x1,y1,x2,y2) in pixels on the uploaded image.
-""")
+        
