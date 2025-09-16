@@ -132,6 +132,20 @@ if upimg is not None:
 
     df = _result_to_dataframe(result)
     counts = _class_counts(df)
+    # --- Calculate % parasitemia ---
+    parasite_classes = ["Infected_RBC", "Parasite"]   # adjust to your model's class names
+    rbc_classes = ["RBC", "Uninfected_RBC"]           # adjust to your model's class names
+    
+    # Get counts
+    total_rbc = counts[counts["class_name"].isin(rbc_classes)]["count"].sum()
+    infected_rbc = counts[counts["class_name"].isin(parasite_classes)]["count"].sum()
+    
+    if total_rbc + infected_rbc > 0:
+        percent_parasitemia = (infected_rbc / (total_rbc + infected_rbc)) * 100
+    else:
+        percent_parasitemia = 0.0
+    
+    st.metric(label="% Parasitemia", value=f"{percent_parasitemia:.2f}%")
 
     with col1:
         st.image(pil, caption="Original", use_column_width=True)
