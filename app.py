@@ -1,8 +1,6 @@
 import os
 import io
-import time
-import tempfile
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import cv2
 import numpy as np
@@ -10,16 +8,18 @@ import pandas as pd
 from PIL import Image
 import streamlit as st
 
+# ===========================
+# Ultralytics (YOLO)
+# ===========================
 try:
     from ultralytics import YOLO
 except Exception as e:
     st.error("Ultralytics isn't installed. Run: pip install ultralytics")
     raise
 
-# ---------------------------
+# ===========================
 # Helpers
-# ---------------------------
-
+# ===========================
 def _bgr_to_rgb(img_bgr: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
@@ -58,7 +58,6 @@ def _export_df_to_csv_bytes(df: pd.DataFrame) -> bytes:
 def _get_device_choice(device_str: str) -> Any:
     # Streamlit selectbox returns a string; YOLO accepts: 0 or "0" for first GPU, or "cpu" for CPU
     if device_str == "Auto":
-        # Let YOLO decide; return None
         return None
     if device_str == "CPU":
         return "cpu"
@@ -68,13 +67,57 @@ def _get_device_choice(device_str: str) -> Any:
     except Exception:
         return None
 
-# ---------------------------
-# UI Layout
-# ---------------------------
+def _guess_class_sets(class_names: List[str]) -> Tuple[List[str], List[str]]:
+    lower = [c.lower() for c in class_names]
+    rbc_like = []
+    infected_like = []
+    infected_keywords = ("infect", "parasite", "ring", "troph", "schiz", "mero", "gameto", "hemozoin")
+    rbc_keywords = ("rbc", "red blood cell", "erythro", "uninfected")
 
+    for c in class_names:
+        cl = c.lower()
+        if any(k in cl for k in rbc_keywords):
+            rbc_like.append(c)
+        if any(k in cl for k in infected_keywords):
+            infected_like.append(c)
+
+    # If nothing is found, leave empty; user will select manually
+    return sorted(set(rbc_like)), sorted(set(infected_like))
+
+def _calc_parasitemia(counts_df: pd.DataFrame,
+                      rbc_classes: List[str],
+                      infected_classes: List[str],
+                      denominator_mode: str = "RBC-only (strict)") -> Dict[str, Any]:
+
+    if counts_df.empty:
+        return {"infected": 0, "denominator": 0, "percent": 0.0, "note": "No detections."}
+
+    # Create mapping for quick lookup
+    count_map = dict(zip(counts_df["class_name"], counts_df["count"]))
+
+    infected = int(sum(count_map.get(c, 0) for c in infected_classes))
+    rbc = int(sum(count_map.get(c, 0) for c in rbc_classes))
+    total = int(counts_df["count"].sum())
+
+    if denominator_mode.startswith("RBC-only"):
+        denom = rbc
+        note = "Denominator = uninfected RBCs only."
+    elif denominator_mode.startswith("RBC + infected"):
+        denom = rbc + infected
+        note = "Denominator = uninfected RBCs + infected RBCs."
+    else:
+        denom = total
+        note = "Denominator = all detections (rough estimate)."
+
+    percent = (infected / denom * 100.0) if denom > 0 else 0.0
+    return {"infected": infected, "denominator": denom, "percent": percent, "note": note,
+            "rbc_count": rbc, "total": total}
+
+# ===========================
+# UI
+# ===========================
 st.set_page_config(page_title="Malaria Detector", page_icon="🧫", layout="wide")
 st.title("🧫 Malaria Parasite Detection")
-st.caption("Demo Streamlit app using Ultralytics YOLO with your trained weights (malaria11n.pt)")
 
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -89,15 +132,17 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("📘 Model Info")
+    model_names_sorted = []
     if os.path.exists(weights_path):
         try:
             _model_tmp = YOLO(weights_path)
-            names_list = [n for _, n in sorted(_model_tmp.names.items())]
-            st.caption("Classes: " + ", ".join(names_list))
+            # maintain deterministic order by id
+            model_names_sorted = [name for _, name in sorted(_model_tmp.names.items(), key=lambda kv: kv[0])]
+            st.caption("Classes: " + ", ".join(model_names_sorted))
         except Exception as e:
             st.warning(f"Could not load model yet: {e}")
     else:
-        st.info("Place malaria11n.pt next to app.py or update the path above.")
+        st.info("Place your weights next to app.py or update the path above.")
 
 # Lazy-load the model (only once)
 @st.cache_resource(show_spinner=True)
@@ -106,6 +151,38 @@ def load_model_cached(path: str):
 
 st.subheader("Detect on an image")
 upimg = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "bmp", "tif", "tiff"])
+
+# ===========================
+# Optional: Class selection for parasitemia
+# ===========================
+with st.expander("🧮 Parasitemia Settings", expanded=True):
+    guessed_rbc, guessed_infected = _guess_class_sets(model_names_sorted) if model_names_sorted else ([], [])
+    st.caption("Select which classes count as **RBC** (uninfected) and which count as **Infected**.")
+    colr, coli = st.columns(2)
+    with colr:
+        rbc_classes = st.multiselect(
+            "RBC classes (uninfected)",
+            options=model_names_sorted,
+            default=guessed_rbc
+        )
+    with coli:
+        infected_classes = st.multiselect(
+            "Infected classes (parasite-positive / stages)",
+            options=model_names_sorted,
+            default=guessed_infected
+        )
+
+    denominator_mode = st.radio(
+        "Denominator mode for % parasitemia",
+        options=["RBC-only (strict)", "RBC + infected (fallback)", "All detections (very rough)"],
+        index=0,
+        help=(
+            "RBC-only: denominator is uninfected RBCs only.\n"
+            "RBC + infected: denominator includes both uninfected and infected RBCs (useful if the model doesn't detect uninfected RBCs).\n"
+            "All detections: uses every detection as denominator (rough)."
+        )
+    )
+
 col1, col2 = st.columns([1, 1])
 
 if upimg is not None:
@@ -130,27 +207,25 @@ if upimg is not None:
     plotted_bgr = result.plot(labels=show_labels, conf=show_conf)  # BGR
     plotted_rgb = _bgr_to_rgb(plotted_bgr)
 
+    # Tables
     df = _result_to_dataframe(result)
     counts = _class_counts(df)
-    # --- Calculate % parasitemia ---
-    parasite_classes = ["Infected_RBC", "Parasite"]   # adjust to your model's class names
-    rbc_classes = ["RBC", "Uninfected_RBC"]           # adjust to your model's class names
-    
-    # Get counts
-    total_rbc = counts[counts["class_name"].isin(rbc_classes)]["count"].sum()
-    infected_rbc = counts[counts["class_name"].isin(parasite_classes)]["count"].sum()
-    
-    if total_rbc + infected_rbc > 0:
-        percent_parasitemia = (infected_rbc / (total_rbc + infected_rbc)) * 100
-    else:
-        percent_parasitemia = 0.0
-    
-    st.metric(label="% Parasitemia", value=f"{percent_parasitemia:.2f}%")
+
+    # === % Parasitemia ===
+    par = _calc_parasitemia(counts, rbc_classes, infected_classes, denominator_mode)
 
     with col1:
         st.image(pil, caption="Original", use_column_width=True)
     with col2:
         st.image(plotted_rgb, caption="Detections", use_column_width=True)
+
+    # Metrics row
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(label="% Parasitemia", value=f"{par['percent']:.2f}%")
+    m2.metric(label="Infected RBCs (numerator)", value=int(par["infected"]))
+    m3.metric(label="Denominator", value=int(par["denominator"]))
+    m4.metric(label="All Detections", value=int(par["total"]))
+    st.caption(f"Note: {par['note']}")
 
     st.markdown("### 📊 Detections")
     c1, c2 = st.columns([1, 1])
@@ -165,6 +240,11 @@ if upimg is not None:
     with c2:
         st.dataframe(counts, use_container_width=True)
 
+    # Quick summary of which classes were counted
+    st.markdown("#### Class Mapping Used")
+    cm1, cm2 = st.columns(2)
+    cm1.write("**RBC classes** (uninfected): " + (", ".join(rbc_classes) if rbc_classes else "—"))
+    cm2.write("**Infected classes**: " + (", ".join(infected_classes) if infected_classes else "—"))
+
 else:
     st.info("Upload an image to start.")
-        
