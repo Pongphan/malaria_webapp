@@ -6,7 +6,6 @@ import tempfile
 from typing import Dict, List, Tuple
 
 import numpy as np
-import cv2
 from PIL import Image
 import streamlit as st
 from ultralytics import YOLO
@@ -78,47 +77,6 @@ def yolo_predict_on_image(model, image: np.ndarray) -> Tuple[np.ndarray, Dict[st
             class_counts[cname] = class_counts.get(cname, 0) + 1
 
     return plotted, class_counts
-
-def process_video(model, video_path: str) -> str:
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError("Could not open video file.")
-
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    # Prepare output file
-    tmp_dir = tempfile.mkdtemp()
-    out_path = os.path.join(tmp_dir, "yolo_output.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    pbar = st.progress(0.0, text="Processing video...")
-
-    frame_idx = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # Inference per frame
-        results = model(frame, imgsz=imgsz, conf=conf_thres, iou=iou_thres, verbose=False)
-        res = results[0]
-        plotted = res.plot(labels=show_labels, conf=show_conf, line_width=line_thickness)
-
-        writer.write(plotted)
-
-        frame_idx += 1
-        if frame_count > 0:
-            pbar.progress(min(frame_idx / frame_count, 1.0))
-
-    cap.release()
-    writer.release()
-    pbar.progress(1.0, text="Done!")
-
-    return out_path
 
 # ==============================
 # Main UI
