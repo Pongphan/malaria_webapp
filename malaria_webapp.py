@@ -2,7 +2,7 @@ import os
 import io
 import re
 import numpy as np
-import cv2
+#import cv2
 from PIL import Image
 import streamlit as st
 
