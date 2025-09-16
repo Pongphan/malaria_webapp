@@ -104,57 +104,53 @@ with st.sidebar:
 def load_model_cached(path: str):
     return YOLO(path)
 
-# ---------------------------
-# Image Tab
-# ---------------------------
-with img_tab:
-    st.subheader("Detect on an image")
-    upimg = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "bmp", "tif", "tiff"])
-    col1, col2 = st.columns([1, 1])
+st.subheader("Detect on an image")
+upimg = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "bmp", "tif", "tiff"])
+col1, col2 = st.columns([1, 1])
 
-    if upimg is not None:
-        image_bytes = upimg.read()
-        pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        np_img = np.array(pil)
+if upimg is not None:
+    image_bytes = upimg.read()
+    pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    np_img = np.array(pil)
 
-        with st.spinner("Running YOLO inference..."):
-            model = load_model_cached(weights_path)
-            device_choice = _get_device_choice(device_str)
-            results = model.predict(
-                source=np_img,
-                conf=conf_thres,
-                iou=iou_thres,
-                imgsz=imgsz,
-                device=device_choice,
-                verbose=False,
-                stream=False,
-            )
+    with st.spinner("Running YOLO inference..."):
+        model = load_model_cached(weights_path)
+        device_choice = _get_device_choice(device_str)
+        results = model.predict(
+            source=np_img,
+            conf=conf_thres,
+            iou=iou_thres,
+            imgsz=imgsz,
+            device=device_choice,
+            verbose=False,
+            stream=False,
+        )
 
-        result = results[0]
-        plotted_bgr = result.plot(labels=show_labels, conf=show_conf)  # BGR
-        plotted_rgb = _bgr_to_rgb(plotted_bgr)
+    result = results[0]
+    plotted_bgr = result.plot(labels=show_labels, conf=show_conf)  # BGR
+    plotted_rgb = _bgr_to_rgb(plotted_bgr)
 
-        df = _result_to_dataframe(result)
-        counts = _class_counts(df)
+    df = _result_to_dataframe(result)
+    counts = _class_counts(df)
 
-        with col1:
-            st.image(pil, caption="Original", use_column_width=True)
-        with col2:
-            st.image(plotted_rgb, caption="Detections", use_column_width=True)
+    with col1:
+        st.image(pil, caption="Original", use_column_width=True)
+    with col2:
+        st.image(plotted_rgb, caption="Detections", use_column_width=True)
 
-        st.markdown("### 📊 Detections")
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.dataframe(df, use_container_width=True)
-            st.download_button(
-                label="⬇️ Download detections CSV",
-                data=_export_df_to_csv_bytes(df),
-                file_name="detections.csv",
-                mime="text/csv",
-            )
-        with c2:
-            st.dataframe(counts, use_container_width=True)
+    st.markdown("### 📊 Detections")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.dataframe(df, use_container_width=True)
+        st.download_button(
+            label="⬇️ Download detections CSV",
+            data=_export_df_to_csv_bytes(df),
+            file_name="detections.csv",
+            mime="text/csv",
+        )
+    with c2:
+        st.dataframe(counts, use_container_width=True)
 
-    else:
-        st.info("Upload an image to start.")
+else:
+    st.info("Upload an image to start.")
         
