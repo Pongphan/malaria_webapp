@@ -2,22 +2,21 @@ import os
 import io
 import re
 import numpy as np
-#import cv2
-from PIL import Image
+import cv2
+from PIL import Image, UnidentifiedImageError
 import streamlit as st
 
-# ---- UI Setup ----
+# ---- UI Setup (must be the first Streamlit call) ----
 st.set_page_config(page_title="Malaria Object Detection (YOLO)", layout="wide")
 st.title("🧫 Malaria Object Detection (YOLO) — RBC / Ring & % Parasitemia")
 
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    # Model path (default to your path)
     model_path = st.text_input(
-        "YOLO model path (.pt)",
+        "YOLO model path (.pt) or hub name/URL",
         value="malaria11n.pt",
-        help="Path to your trained YOLO model file.",
+        help="Local .pt path, Ultralytics hub model name, or a URL supported by Ultralytics.",
     )
 
     conf_thres = st.slider("Confidence threshold", 0.0, 1.0, 0.25, 0.01)
@@ -45,25 +44,26 @@ with col_path:
 run_btn = st.button("🚀 Run Detection")
 
 # ---- Utilities ----
-def load_image_from_upload(uploaded_file) -> np.ndarray:
+def load_image_from_upload(uploaded_file) -> np.ndarray | None:
     """Read uploaded file into RGB numpy array."""
-    image = Image.open(uploaded_file).convert("RGB")
-    return np.array(image)
+    try:
+        image = Image.open(uploaded_file).convert("RGB")
+        return np.array(image)
+    except UnidentifiedImageError:
+        return None
 
-def load_image_from_path(path) -> np.ndarray:
+def load_image_from_path(path) -> np.ndarray | None:
     """Read image from path into RGB numpy array."""
-    bgr = cv2.imread(path)
+    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
     if bgr is None:
         return None
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 def sanitize_label(label: str) -> str:
-    """Lowercase, strip whitespace/punctuation from end, normalize common variants."""
-    if label is None:
+    """Lowercase, strip trailing punctuation/space, normalize common variants."""
+    if not label:
         return ""
-    # Remove trailing punctuation like commas/colons/semicolons/dots
-    lab = re.sub(r"[\s,;:\.]+$", "", label.lower().strip())
-    # Normalize known variants
+    lab = re.sub(r"[\s,;:\.]+$", "", str(label).lower().strip())
     aliases = {
         "ring form": "ring",
         "ring_form": "ring",
@@ -85,15 +85,68 @@ RING_ALIASES = {"ring"}
 RBC_ALIASES  = {"rbc"}
 
 # ---- Lazy-load YOLO model ----
-@st.cache_resource(show_spinner=True)
+@st.cache_resource
 def get_model(path: str):
-    from ultralytics import YOLO  # import here to avoid import cost if not used
-    return YOLO(path)
+    try:
+        from ultralytics import YOLO  # import here to avoid import cost if not used
+    except Exception as e:
+        raise RuntimeError(
+            "Failed to import Ultralytics. Make sure `ultralytics` is installed."
+        ) from e
+    try:
+        return YOLO(path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load YOLO model from: {path}") from e
+
+def to_numpy(x):
+    """Safely convert torch/tensor-like to numpy, else passthrough."""
+    try:
+        # torch Tensor
+        if hasattr(x, "detach"):
+            return x.detach().cpu().numpy()
+        # torch-like with .cpu()
+        if hasattr(x, "cpu"):
+            return x.cpu().numpy()
+    except Exception:
+        pass
+    # already numpy or list-like
+    return np.asarray(x)
 
 def run_yolo(model, image_rgb: np.ndarray, conf: float):
-    # Ultralytics can take numpy RGB arrays directly
+    # Ultralytics v8 accepts numpy RGB arrays directly
     results = model.predict(source=image_rgb, conf=conf, verbose=False)
-    return results
+    # Ensure we have a list-like of results
+    if results is None:
+        return []
+    try:
+        # Some versions return a Results object iterable; make it list
+        return list(results)
+    except TypeError:
+        return [results]
+
+def extract_name_map(model, results0):
+    """Derive class id -> name map from model or results; fallback to {}."""
+    # model.names
+    try:
+        names = getattr(model, "names", None)
+        if isinstance(names, list):
+            return {i: n for i, n in enumerate(names)}
+        if isinstance(names, dict):
+            return {int(k): v for k, v in names.items()}
+    except Exception:
+        pass
+
+    # results[0].names
+    try:
+        nm = getattr(results0, "names", None)
+        if isinstance(nm, list):
+            return {i: nm[i] for i in range(len(nm))}
+        if isinstance(nm, dict):
+            return {int(k): v for k, v in nm.items()}
+    except Exception:
+        pass
+
+    return {}
 
 def draw_and_summarize(image_rgb: np.ndarray, results, class_name_map: dict,
                        conf: float, font_scale: float, thickness: int, draw_all_labels: bool):
@@ -107,14 +160,17 @@ def draw_and_summarize(image_rgb: np.ndarray, results, class_name_map: dict,
     count_rbc = 0
     rows = []
 
-    if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+    if not results:
         return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), 0, 0, rows
 
-    boxes = results[0].boxes
-    # Safe access for tensors
-    xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, "cpu") else np.array(boxes.xyxy)
-    clss = boxes.cls.cpu().numpy().astype(int) if hasattr(boxes.cls, "cpu") else boxes.cls.astype(int)
-    confs = boxes.conf.cpu().numpy().astype(float) if hasattr(boxes.conf, "cpu") else boxes.conf.astype(float)
+    r0 = results[0]
+    boxes = getattr(r0, "boxes", None)
+    if boxes is None or len(getattr(boxes, "xyxy", [])) == 0:
+        return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), 0, 0, rows
+
+    xyxy = to_numpy(boxes.xyxy)
+    clss = to_numpy(boxes.cls).astype(int) if getattr(boxes, "cls", None) is not None else np.zeros(len(xyxy), int)
+    confs = to_numpy(boxes.conf).astype(float) if getattr(boxes, "conf", None) is not None else np.ones(len(xyxy), float)
 
     for i in range(len(xyxy)):
         x1, y1, x2, y2 = [int(v) for v in xyxy[i]]
@@ -138,7 +194,7 @@ def draw_and_summarize(image_rgb: np.ndarray, results, class_name_map: dict,
 
         cv2.rectangle(img_bgr, (x1, y1), (x2, y2), color, thickness)
 
-        # Labels: by default only for RING (like your original script), optional for all
+        # Labels: by default only for RING; optional for all
         if lab in RING_ALIASES or draw_all_labels:
             label_text = f"{raw_label} {c:.2f}"
             cv2.putText(
@@ -157,7 +213,7 @@ def draw_and_summarize(image_rgb: np.ndarray, results, class_name_map: dict,
             "label_sanitized": lab,
             "conf": round(c, 4),
             "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "area": int((x2 - x1) * (y2 - y1))
+            "area": int(max(0, (x2 - x1)) * max(0, (y2 - y1)))
         })
 
     annotated_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -170,41 +226,42 @@ filename = None
 
 if file is not None:
     image_rgb = load_image_from_upload(file)
-    filename = getattr(file, "name", "uploaded_image")
-elif img_path and os.path.exists(img_path):
-    image_rgb = load_image_from_path(img_path)
-    filename = os.path.basename(img_path)
+    if image_rgb is None:
+        st.error("Unable to read the uploaded image. Please try a different file.")
+    else:
+        filename = getattr(file, "name", "uploaded_image")
+elif img_path:
+    if os.path.exists(img_path):
+        image_rgb = load_image_from_path(img_path)
+        if image_rgb is None:
+            st.error("Failed to load image from the given path (unsupported or corrupted).")
+        else:
+            filename = os.path.basename(img_path)
+    else:
+        # Don't error here; user might upload instead
+        pass
 
 if run_btn:
-    if not model_path or not os.path.exists(model_path):
-        st.error("Model file not found. Please provide a valid `.pt` path.")
+    # Model path sanity: if it's a local path and doesn't exist, block; otherwise allow (hub/URL)
+    is_local_like = not (model_path.startswith("http://") or model_path.startswith("https://"))
+    if not model_path:
+        st.error("Please provide a model path or name.")
+    elif is_local_like and not os.path.exists(model_path):
+        st.error("Local model file not found. Provide a valid `.pt` path, or a hub/URL model name.")
     elif image_rgb is None:
         st.error("Please upload an image or provide a valid image path.")
     else:
         with st.spinner("Loading model and running detection..."):
-            model = get_model(model_path)
-
-            # Prefer model.names if available; fallback to results[0].names later
-            class_name_map = None
             try:
-                # ultralytics keeps names as dict {id: name}
-                if hasattr(model, "names") and isinstance(model.names, (dict, list)):
-                    if isinstance(model.names, list):
-                        class_name_map = {i: n for i, n in enumerate(model.names)}
-                    else:
-                        class_name_map = dict(model.names)
-            except Exception:
-                class_name_map = None
+                model = get_model(model_path)
+            except Exception as e:
+                st.exception(e)
+                st.stop()
 
             results = run_yolo(model, image_rgb, conf_thres)
 
-            # If model.names missing, try pulling from results
-            if class_name_map is None and results and hasattr(results[0], "names"):
-                nm = results[0].names
-                class_name_map = {i: nm[i] for i in range(len(nm))} if isinstance(nm, list) else dict(nm)
-
-            if class_name_map is None:
-                class_name_map = {}
+            # Build class-name map
+            class_name_map = extract_name_map(model, results[0] if results else None)
 
             annotated_rgb, count_rbc, count_ring, rows = draw_and_summarize(
                 image_rgb, results, class_name_map, conf_thres, font_scale, box_thickness, show_all_labels
@@ -218,16 +275,18 @@ if run_btn:
 
         with left:
             st.subheader("🖼️ Annotated Image")
-            st.image(annotated_rgb, caption=f"{filename}", use_container_width=True)
+            st.image(annotated_rgb, caption=f"{filename or 'image'}", use_container_width=True)
 
             # Download button
             pil_img = Image.fromarray(annotated_rgb)
             buf = io.BytesIO()
             pil_img.save(buf, format="PNG")
+            buf.seek(0)
+            safe_name = (filename or "image").replace(os.sep, "_")
             st.download_button(
                 "⬇️ Download annotated image",
-                buf.getvalue(),
-                file_name=f"annotated_{filename.replace(os.sep, '_')}.png",
+                buf,
+                file_name=f"annotated_{safe_name}.png",
                 mime="image/png",
             )
 
@@ -238,15 +297,16 @@ if run_btn:
             m2.metric("Ring count", f"{count_ring}")
             m3.metric("% Parasitemia", f"{parasitemia:.2f}%")
 
-            st.caption("Parasitemia = ring / (RBC + ring) × 100. Set your confidence in the sidebar.")
+            st.caption("Parasitemia = ring / (RBC + ring) × 100. Adjust confidence in the sidebar.")
 
-            if show_table and rows:
+            if show_table:
                 import pandas as pd
-                df = pd.DataFrame(rows)
-                st.markdown("#### Detections")
-                st.dataframe(df, use_container_width=True)
-            elif show_table:
-                st.info("No detections to show at current threshold.")
+                if rows:
+                    df = pd.DataFrame(rows)
+                    st.markdown("#### Detections")
+                    st.dataframe(df, use_container_width=True)
+                else:
+                    st.info("No detections to show at current threshold.")
 
 else:
     st.info("👈 Choose your model, upload an image or set a path, then click **Run Detection**.")
