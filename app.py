@@ -109,7 +109,7 @@ def _calc_parasitemia(counts_df: pd.DataFrame,
         denom = total
         note = "Denominator = all detections (rough estimate)."
 
-    percent = (infected / denom * 100.0) if denom > 0 else 0.0
+    percent = (infected / (denom + infected) * 100.0) if denom > 0 else 0.0
     return {"infected": infected, "denominator": denom, "percent": percent, "note": note,
             "rbc_count": rbc, "total": total}
 
